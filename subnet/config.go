@@ -29,6 +29,7 @@ type Config struct {
 	SubnetLen   uint
 	BackendType string          `json:"-"`
 	Backend     json.RawMessage `json:",omitempty"`
+	Mixed       bool
 }
 
 func parseBackendType(be json.RawMessage) (string, error) {

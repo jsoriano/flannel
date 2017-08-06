@@ -35,6 +35,7 @@ type network struct {
 	rl        []netlink.Route
 	lease     *subnet.Lease
 	sm        subnet.Manager
+	mixed     bool
 }
 
 func (n *network) Lease() *subnet.Lease {
@@ -82,7 +83,7 @@ func (n *network) handleSubnetEvents(batch []subnet.Event) {
 		case subnet.EventAdded:
 			log.Infof("Subnet added: %v via %v", evt.Lease.Subnet, evt.Lease.Attrs.PublicIP)
 
-			if evt.Lease.Attrs.BackendType != "host-gw" {
+			if !n.mixed && evt.Lease.Attrs.BackendType != "host-gw" {
 				log.Warningf("Ignoring non-host-gw subnet: type=%v", evt.Lease.Attrs.BackendType)
 				continue
 			}
@@ -121,7 +122,7 @@ func (n *network) handleSubnetEvents(batch []subnet.Event) {
 		case subnet.EventRemoved:
 			log.Info("Subnet removed: ", evt.Lease.Subnet)
 
-			if evt.Lease.Attrs.BackendType != "host-gw" {
+			if !n.mixed && evt.Lease.Attrs.BackendType != "host-gw" {
 				log.Warningf("Ignoring non-host-gw subnet: type=%v", evt.Lease.Attrs.BackendType)
 				continue
 			}

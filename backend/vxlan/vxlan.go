@@ -117,7 +117,7 @@ func (be *VXLANBackend) RegisterNetwork(ctx context.Context, config *subnet.Conf
 		return nil, err
 	}
 
-	return newNetwork(be.subnetMgr, be.extIface, dev, vxlanNet, lease)
+	return newNetwork(be.subnetMgr, be.extIface, dev, vxlanNet, lease, config.Mixed)
 }
 
 // So we can make it JSON (un)marshalable

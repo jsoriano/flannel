@@ -328,6 +328,9 @@ func getConfig(ctx context.Context, sm subnet.Manager) (*subnet.Config, error) {
 			log.Warningf("Couldn't find network config: %s", err)
 		} else {
 			log.Infof("Found network config - Backend type: %s", config.BackendType)
+			if config.Mixed {
+				log.Warningf("Mixed backends allowed")
+			}
 			return config, nil
 		}
 		select {

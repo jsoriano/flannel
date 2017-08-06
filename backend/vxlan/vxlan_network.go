@@ -37,9 +37,11 @@ type network struct {
 	dev       *vxlanDevice
 	routes    routes
 	subnetMgr subnet.Manager
+
+	mixed bool
 }
 
-func newNetwork(subnetMgr subnet.Manager, extIface *backend.ExternalInterface, dev *vxlanDevice, _ ip.IP4Net, lease *subnet.Lease) (*network, error) {
+func newNetwork(subnetMgr subnet.Manager, extIface *backend.ExternalInterface, dev *vxlanDevice, _ ip.IP4Net, lease *subnet.Lease, mixed bool) (*network, error) {
 	nw := &network{
 		SimpleNetwork: backend.SimpleNetwork{
 			SubnetLease: lease,
@@ -47,6 +49,7 @@ func newNetwork(subnetMgr subnet.Manager, extIface *backend.ExternalInterface, d
 		},
 		subnetMgr: subnetMgr,
 		dev:       dev,
+		mixed:     mixed,
 	}
 
 	return nw, nil
@@ -115,6 +118,16 @@ func (nw *network) handleSubnetEvents(batch []subnet.Event) {
 		case subnet.EventAdded:
 			log.V(1).Info("Subnet added: ", event.Lease.Subnet)
 
+			if nw.mixed {
+				if event.Lease.Attrs.BackendType == "host-gw" {
+					nw.handleAddHostgwSubnetEvent(event)
+					continue
+				}
+
+				// It could have been a host-gw subnet changed to vxlan
+				nw.hostgwSubnetCleanup(event)
+			}
+
 			if event.Lease.Attrs.BackendType != "vxlan" {
 				log.Warningf("Ignoring non-vxlan subnet: type=%v", event.Lease.Attrs.BackendType)
 				continue
@@ -132,6 +145,11 @@ func (nw *network) handleSubnetEvents(batch []subnet.Event) {
 			log.V(1).Info("Subnet removed: ", event.Lease.Subnet)
 
 			if event.Lease.Attrs.BackendType != "vxlan" {
+				if nw.mixed && event.Lease.Attrs.BackendType == "host-gw" {
+					nw.handleRemoveHostgwSubnetEvent(event)
+					continue
+				}
+
 				log.Warningf("Ignoring non-vxlan subnet: type=%v", event.Lease.Attrs.BackendType)
 				continue
 			}
@@ -151,6 +169,76 @@ func (nw *network) handleSubnetEvents(batch []subnet.Event) {
 			log.Error("Internal error: unknown event type: ", int(event.Type))
 		}
 	}
+}
+
+func (nw *network) hostgwSubnetCleanup(event subnet.Event) {
+	routeList, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{
+		Dst: event.Lease.Subnet.ToIPNet(),
+	}, netlink.RT_FILTER_DST)
+	if err != nil {
+		log.Warningf("Unable to list routes: %v", err)
+	}
+	for _, r := range routeList {
+		log.Warningf("Removing existing route to %v via %v.", event.Lease.Subnet, r.Gw)
+		if err := netlink.RouteDel(&r); err != nil {
+			log.Errorf("Error deleting route to %v: %v", event.Lease.Subnet, err)
+			return
+		}
+	}
+}
+
+// Copied from hostgw_network.go
+func (nw *network) handleAddHostgwSubnetEvent(event subnet.Event) {
+	route := netlink.Route{
+		Dst: event.Lease.Subnet.ToIPNet(),
+		Gw:  event.Lease.Attrs.PublicIP.ToIP(),
+		// LinkIndex: nw.dev.link.Index,
+	}
+
+	// Check if route exists before attempting to add it
+	routeList, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{
+		Dst: route.Dst,
+	}, netlink.RT_FILTER_DST)
+	if err != nil {
+		log.Warningf("Unable to list routes: %v", err)
+	}
+	//   Check match on Dst for match on Gw
+	if len(routeList) > 0 && !routeList[0].Gw.Equal(route.Gw) {
+		// Same Dst different Gw. Remove it, correct route will be added below.
+		log.Warningf("Replacing existing route to %v via %v with %v via %v.", event.Lease.Subnet, routeList[0].Gw, event.Lease.Subnet, event.Lease.Attrs.PublicIP)
+		if err := netlink.RouteDel(&route); err != nil {
+			log.Errorf("Error deleting route to %v: %v", event.Lease.Subnet, err)
+			return
+		}
+	}
+	if len(routeList) > 0 && routeList[0].Gw.Equal(route.Gw) {
+		// Same Dst and same Gw, keep it and do not attempt to add it.
+		log.Infof("Route to %v via %v already exists, skipping.", event.Lease.Subnet, event.Lease.Attrs.PublicIP)
+	} else if err := netlink.RouteAdd(&route); err != nil {
+		log.Errorf("Error adding route to %v via %v: %v", event.Lease.Subnet, event.Lease.Attrs.PublicIP, err)
+		return
+	}
+}
+
+// Copied from hostgw_network.go
+func (nw *network) handleRemoveHostgwSubnetEvent(evt subnet.Event) {
+	route := netlink.Route{
+		Dst: evt.Lease.Subnet.ToIPNet(),
+		Gw:  evt.Lease.Attrs.PublicIP.ToIP(),
+		// LinkIndex: nw.dev.link.Index,
+	}
+	if err := netlink.RouteDel(&route); err != nil {
+		log.Errorf("Error deleting route to %v: %v", evt.Lease.Subnet, err)
+		return
+	}
+}
+
+// Copied from hostgw_network.go
+func routeEqual(x, y netlink.Route) bool {
+	if x.Dst.IP.Equal(y.Dst.IP) && x.Gw.Equal(y.Gw) && bytes.Equal(x.Dst.Mask, y.Dst.Mask) {
+		return true
+	}
+	return false
 }
 
 func (nw *network) handleInitialSubnetEvents(batch []subnet.Event) error {

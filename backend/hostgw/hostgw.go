@@ -55,6 +55,7 @@ func (be *HostgwBackend) RegisterNetwork(ctx context.Context, config *subnet.Con
 	n := &network{
 		extIface: be.extIface,
 		sm:       be.sm,
+		mixed:    config.Mixed,
 	}
 
 	attrs := subnet.LeaseAttrs{
